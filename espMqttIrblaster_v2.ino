@@ -1,7 +1,6 @@
 /*
 - Uses a Wemos D1 Mini.
 
-
 * - Receives Mqtt messages and sends IR codes to the tv and other equipment.
 * - Receives ir-codes and send them via Mqtt.
 * - Measures room temperature
@@ -54,6 +53,9 @@ Patrik Hermansson 2017
 #include <Wire.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <RCSwitch.h> // RF transmitter
+
+RCSwitch mySwitch = RCSwitch();
 
 // Define I/O:s
 IRsend irsend(5); //an IR led is connected to Gpio5/D1
@@ -73,10 +75,7 @@ long lastMsg = 0;
 String temp, hum, curHour, curMinute;
 String localip;
 
-//For Json output
-StaticJsonBuffer<200> jsonBuffer;
-JsonObject& root = jsonBuffer.createObject();
-char msg[100];
+
 
 char ssid[]="";
 const char* password = "..........";
@@ -96,6 +95,8 @@ void setup() {
   //char* bestWifi[15];
   Serial.begin(115200);
   Serial.println("Booting");
+
+  StaticJsonBuffer<200> jsonBuffer;
 
   // Setup wifi
 
@@ -163,6 +164,22 @@ void setup() {
   irsend.begin();
   irrecv.enableIRIn(); // Start the receiver
 
+  // RF receiver
+  pinMode(D5, OUTPUT);
+
+  // Test RF transmitter
+  #define CODE_ButtonOn 1052693  
+  #define CODE_ButtonOff 1052692  
+
+  mySwitch.enableTransmit(D5);
+  delay(500);
+  Serial.print("Send code ");
+  Serial.println(CODE_ButtonOn);
+  mySwitch.send(CODE_ButtonOff, 24);
+  delay(2000);
+  mySwitch.send(CODE_ButtonOn, 24);
+  
+
   // DS18B20
   sensors.begin();
 
@@ -221,7 +238,10 @@ void loop() {
     Serial.print("Light: ");
     Serial.println(ll);
     
-
+    //For Json output
+    StaticJsonBuffer<200> jsonBuffer;
+    JsonObject& root = jsonBuffer.createObject();
+    char msg[100];
     root["temp"] = temp;
     root["light"] = ll;
 
@@ -268,7 +288,7 @@ void reconnect() {
 
 // When a Mqtt message has arrived
 void callback(char* topic, byte* payload, unsigned int length) {
-  char message[14] ="";
+  char message[40] ="";
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
@@ -280,14 +300,43 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
   Serial.println(stringPayload);
 
-  uint64_t uPayload = 0;
+  //uint64_t uPayload = 0;
   // Byte to uint64
-  memcpy(&uPayload, payload, sizeof(uint64_t));
+  //memcpy(&uPayload, payload, sizeof(uint64_t));
+
+  /* Send a message like this:
+  * mosquitto_pub -h <Mqtt server ip> -u '<username>' -P '<password>' -t 'espMqttIrblaster/irsender' 
+  * -m '{type:ir|rf,code:20,onoff:on}'
+  * 
+  */
+  //For Json output
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& root = jsonBuffer.createObject();
+  //char msg[100];
+
+  JsonObject& rootRec = jsonBuffer.parseObject(payload);
+  if (!rootRec.success()) {
+      Serial.println("parseObject() failed");
+      return;
+  }
+  String type = rootRec["type"];
+  Serial.println(type);
+  String code = rootRec["code"];
+  Serial.println(code);
+  String onoff = rootRec["onoff"];
+  Serial.println(onoff);
+
+  if (type="rf") {
+    Serial.println("Send rf");
+    int iCode = code.toInt();
+    mySwitch.send(iCode, 24);
+
+  }
   //irsend.sendSAMSUNG(uPayload, 32);
-  irsend.sendSAMSUNG(551489775, 32);
+  /*irsend.sendSAMSUNG(551489775, 32);
   irsend.sendLG(551489775, 28);
-   irsend.sendLG(0x20DF10EF, 28);
-  
+  irsend.sendLG(0x20DF10EF, 28);
+  */
 
 }
 
