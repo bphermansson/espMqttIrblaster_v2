@@ -21,7 +21,9 @@ Patrik Hermansson 2017
 * - Press a button on an Ir remote, you see a Mqtt-mess with the Ir-code, type and more
 * espMqttIrblaster/irrec {"Protocol":"IR","type":"NEC","code":"5EA1D827","bits":32}
 * 
+* mosquitto_pub -h 192.168.1.79 -u 'emonpi' -P 'emonpimqtt2016' -t 'espMqttIrblaster/irsender' -m '{t:ir,p:NEC,c:0x5EA1D827,b:32}'
 * 
+* Hardware:
 * IR transmitter
 * 330 ohm from D1 to BC547 base. Emittor to ground, collector to ir led cathod.
 * Two IR leds in parallel, anode to +5V. 
@@ -47,10 +49,9 @@ Patrik Hermansson 2017
 #include <DallasTemperature.h>
 #include <RCSwitch.h> // RF transmitter
 
-//#include "RemoteDebug.h" // Debug via Telnet, https://github.com/JoaoLopesF/RemoteDebug
-//RemoteDebug Debug;
-
+// IR transmit/receive
 RCSwitch mySwitch = RCSwitch();
+decode_results results;
 
 // Define I/O:s
 IRsend irsend(5); //an IR led is connected to Gpio5/D1
@@ -58,20 +59,13 @@ IRrecv irrecv(D2);
 #define ONE_WIRE_BUS D3
 #define lightsensor A0
 
+// Temperature sensor
 OneWire oneWire(ONE_WIRE_BUS);
-// Pass our oneWire reference to Dallas Temperature.
 DallasTemperature sensors(&oneWire);
-
-// IR
-decode_results results;
-//struct irdec {
-//  String dectype;
-//};
 
 // For state machine
 long lastMsg = 0;
 String temp, hum, curHour, curMinute;
-
 
 // Mqtt
 #include <PubSubClient.h>
@@ -159,26 +153,18 @@ void setup() {
   //Serial.print("IP address: ");
   //Serial.println(localip);
 
+  // Publish some info
   IPAddress ip = WiFi.localIP();
-  char buf[16];
-  sprintf(buf, "IP:%d.%d.%d.%d", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3] );
-
-  /*char mess[150];
-  String sMess;
-  sMess = "Hello from espMqttIrblaster_v2"; 
-  sMess.toCharArray(mess, 50);
-  client.publish(mqtt_status_topic, mess);  // Wants a char*/
-  client.publish(mqtt_status_topic, "espMqttIrblaster_v2");
+  char buf[60];
+  sprintf(buf, "espMqttIrblaster_v2 @ IP:%d.%d.%d.%d SSID: %s", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3], ssid );
   client.publish(mqtt_status_topic, buf);
-  client.publish(mqtt_status_topic, ssid);
   
   // Initialize irsender
   //Serial.println("IR");
   irsend.begin();
   irrecv.enableIRIn(); // Start the receiver
 
-  // RF receiver
-  //pinMode(D5, OUTPUT);
+  // Enable RF receiver
   mySwitch.enableTransmit(D5);
 
   // Test RF transmitter
@@ -194,9 +180,10 @@ void setup() {
   mySwitch.send(CODE_ButtonOn, 24);
 */
 
-  // DS18B20
+  // Enable DS18B20
   sensors.begin();
 
+  // Wireless programming, 'Over The Air'
   ArduinoOTA.onStart([]() {
     //Serial.println("Start");
   });
@@ -215,48 +202,33 @@ void setup() {
     else if (error == OTA_END_ERROR) Serial.println("End Failed");
   });
   ArduinoOTA.begin();
-  //Serial.println("Ready");
-
 
   if (MDNS.begin("espMqttIrblaster")) {
     //Serial.println("MDNS responder started");
   }
-
-/*  Debug.begin("Telnet_HostName"); 
-  Debug.setResetCmdEnabled(true); // Enable the reset command
-  Debug.println("Setup done");
-  DEBUG_I("This is a information");
-*/
+  client.publish(mqtt_status_topic, "Ready for action!");
 
 }
 void loop() {
-  //Debug.handle();
-
+  // Handle wireless programming requests
   ArduinoOTA.handle();
-  
+
+  // IR signal detected
   if (irrecv.decode(&results)) {
-    // print() & println() can't handle printing long longs. (uint64_t)
     /*Serial.print("IR rec:");
     serialPrintUint64(results.value, HEX);
     Serial.println("");
     */
     // Decode and send via Mqtt
     dump(&results);
-
-    // Send results via Mqtt
-    /*char msg[40];
-    sprintf (msg, "{\"Irrec\":%d}", results.value);
-    client.publish(mqtt_pub_topic, msg);  
-    */
     irrecv.resume();  // Receive the next value
   }
   delay(100);
 
-  // "State machine", check sensor and send values when 2 minutes have passed.
+  // "State machine", check sensors and publish values when 2 minutes have passed.
   long now = millis();
   if (now - lastMsg > 120000) {  // Every 2 minutes
   //if (now - lastMsg > 10000) {  // Every 10 seconds
-    //DEBUG_I("* Going to read sensors\n");
     lastMsg = now;
 
     sensors.requestTemperatures(); // Send the command to get temperatures
@@ -286,7 +258,7 @@ void loop() {
     }
     client.loop();
 }
-
+/*
 void printDigits(int digits){
   // utility function for digital clock display: prints preceding colon and leading 0
   Serial.print(":");
@@ -294,7 +266,7 @@ void printDigits(int digits){
     Serial.print('0');
   Serial.print(digits);
 }
-
+*/
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
@@ -319,7 +291,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print(topic);
   Serial.print("] ");
   */
-  
+ 
   char msg[200]="";
   
   // Extract payload
@@ -332,15 +304,17 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   /* Send a message like this:
   * mosquitto_pub -h <Mqtt server ip> -u '<username>' -P '<password>' -t 'espMqttIrblaster/irsender' 
-  * -m '{type:ir|rf,code:20,bits:32}'
+  * -m '{type:ir|rf,[p:protocol,]code:20,bits:32}'
   * 
-  * mosquitto_pub -h 192.168.1.79 -u 'emonpi' -P 'emonpimqtt2016' -t 'espMqttIrblaster/irsender' -m '{t:ir,c:0x5EA1D827,b:32}'
+  * mosquitto_pub -h 192.168.1.79 -u 'emonpi' -P 'emonpimqtt2016' -t 'espMqttIrblaster/irsender' -m '{t:ir,p:NEC,c:5EA1D827,b:32}'
   * mosquitto_pub -h 192.168.1.79 -u 'emonpi' -P 'emonpimqtt2016' -t 'espMqttIrblaster/irsender' -m '{t:rf,c:20,b:32}'
-  * 
   * 
   * Nexa C3:
   * mosquitto_pub -h 192.168.1.79 -u 'emonpi' -P 'emonpimqtt2016' -t 'espMqttIrblaster/irsender' -m '{t:rf,c:1052693,b:24}'
   */
+
+  // Dont send before extraction, it breaks the message
+  client.publish(mqtt_status_topic, "A mqtt message has arrived");
   
   // Decode json
   const size_t bufferSize = JSON_OBJECT_SIZE(3) + 20;
@@ -348,49 +322,42 @@ void callback(char* topic, byte* payload, unsigned int length) {
   JsonObject& rootRec = jsonBuffer.parseObject(stringPayload);
   if (!rootRec.success()) {
       //Serial.println("parseObject() failed");
-      client.publish(mqtt_pub_topic, "Mqtt parse error");  
+      client.publish(mqtt_status_topic, "Mqtt parse error");  
       return;
   }
   else {
-      client.publish(mqtt_pub_topic, "Mqtt parsed ok");  
+      client.publish(mqtt_status_topic, "Mqtt parsed ok");  
   }
 
   // Get Json values
   String type = rootRec["t"];
   //Serial.println(type);
-  unsigned long code = rootRec["c"];
-  String scode = rootRec["c"];
-  //Serial.println(code);
+  String code = rootRec["c"];
+  int icode = code.toInt();
+  //const char* ccode = rootRec["c"];   
   String bits = rootRec["b"];
   int ibits = rootRec["b"];
   //Serial.println(bits);
   
   if (type=="rf") {
+    // mosquitto_pub -h 192.168.1.79 -u 'emonpi' -P 'emonpimqtt2016' -t 'espMqttIrblaster/irsender' -m '{t:rf,c:1052692,b:24}'
+
     //Serial.println("Send rf");
-    char cstatus[100];
-    sprintf(cstatus,"Send rf = %s", code);
-    
-    //cstatus.toCharArray(msg,100);
+    //char cstatus[100];
+    itoa(icode, msg, 10);
     client.publish(mqtt_status_topic, "Send rf");
     client.publish(mqtt_status_topic, msg);
-    mySwitch.send(code, ibits);
+    mySwitch.send(icode, ibits);
     // Debug:
     // mySwitch.send(1052692, 24);
     
   }
   else if (type=="ir") {
+    int cod = hexToDec(code);    
     String protocol = rootRec["p"];
-    //Serial.println(protocol);
     
-    //int iBits = bits.toInt();
-    scode.toCharArray(msg,50);
-    client.publish(mqtt_status_topic, msg);
-
-    // It works to send the dec equivalent of 0xE0E040BF (=3772793023)
-    
-    //int iCode = code.toInt();
     if (protocol=="NEC") {
-      irsend.sendNEC(code, ibits);
+      irsend.sendNEC(cod, ibits);
       
     }
     else if (protocol=="SONY") {
@@ -427,15 +394,16 @@ void callback(char* topic, byte* payload, unsigned int length) {
 }
 
 void dump(decode_results *results) {
-  // Dumps out the decode_results structure.
-  // Call this after IRrecv::decode()
+  // A ir code has been received, let's decode it.
   uint16_t count = results->rawlen;
+
+  client.publish(mqtt_status_topic, "An Ir code has been detected");
 
   // Mqtt buffer
   StaticJsonBuffer<200> jsonBuffer;
   JsonObject& root = jsonBuffer.createObject();
 
-  root["Protocol"] = "IR";
+  root["Protocol"] = "ir";
   
   if (results->decode_type == UNKNOWN) {
     //Serial.print("Unknown encoding: ");
@@ -515,6 +483,27 @@ int lightlevel(int adPin)                       // Measures volts at adPin
 {                                            
  return int(analogRead(adPin));
 }  
+
+unsigned int hexToDec(String hexString) {
+  
+  unsigned int decValue = 0;
+  int nextInt;
+  
+  for (int i = 0; i < hexString.length(); i++) {
+    
+    nextInt = int(hexString.charAt(i));
+    if (nextInt >= 48 && nextInt <= 57) nextInt = map(nextInt, 48, 57, 0, 9);
+    if (nextInt >= 65 && nextInt <= 70) nextInt = map(nextInt, 65, 70, 10, 15);
+    if (nextInt >= 97 && nextInt <= 102) nextInt = map(nextInt, 97, 102, 10, 15);
+    nextInt = constrain(nextInt, 0, 15);
+    
+    decValue = (decValue * 16) + nextInt;
+  }
+  
+  return decValue;
+}
+
+
 /*
 String uint64ToString(uint64_t input, uint8_t base) {
   String result = "";
